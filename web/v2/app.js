@@ -1,11 +1,14 @@
-// ThinkSmart voice client page v2: renders what the client streams on /events and sends the buttons back.
-// Same contract as v1. Open with ?demo (or ?demo=<scene>) to preview without a client.
+// ThinkSmart voice client page v2. Office landscape panel: same /events and /api contract as before.
+// ?demo (or ?demo=<scene>) previews without a client. ?shot= is a labeled fixture and is never the kiosk default.
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pad = n => String(n).padStart(2, '0');
 const WEEK = '日一二三四五六';
-const DEMO = new URLSearchParams(location.search).get('demo');   // null when not a demo
-if (DEMO !== null && /[?&]still\b/.test(location.search)) document.documentElement.classList.add('still');
+const params = new URLSearchParams(location.search);
+const DEMO = params.get('demo');   // null when not a demo
+const SHOT = params.get('shot');   // labeled test fixture; absent on the kiosk
+if (DEMO !== null || SHOT || params.get('wx')) document.documentElement.classList.add('demo');
+if ((DEMO !== null && /[?&]still\b/.test(location.search)) || SHOT) document.documentElement.classList.add('still');
 
 const ui = {
   status: { state: 'idle', connected: false, uploading: false },
@@ -40,12 +43,15 @@ function tick() {
    All bars are drawn on one canvas: as 48 elements, restyling them 30 times a second kept
    the device's main thread at ~93% and the page at ~17 fps. */
 const BARS = 48, R_IN = 110, BAR_W = 6, REST = 8, REACH = 46;   // px; REST + REACH stays inside the canvas
-const corona = document.createElement('canvas');
+const coronaHost = $('corona');   // the office panel has no corona canvas; v2b and older copies still do
+const corona = coronaHost ? document.createElement('canvas') : null;
 const CSIZE = 330, DPR = Math.min(2, window.devicePixelRatio || 1);
-corona.width = corona.height = CSIZE * DPR;
-corona.style.width = corona.style.height = '100%';
-$('corona').appendChild(corona);
-const cx = corona.getContext('2d');
+if (coronaHost) {
+  corona.width = corona.height = CSIZE * DPR;
+  corona.style.width = corona.style.height = '100%';
+  coronaHost.appendChild(corona);
+}
+const cx = corona ? corona.getContext('2d') : null;
 const ANG = Array.from({ length: BARS }, (_, i) => i / BARS * Math.PI * 2);
 const COS = ANG.map(Math.cos), SIN = ANG.map(Math.sin);
 // per bar: [length px, opacity]; what is on screen, where a morph starts, and where the state wants it
@@ -53,6 +59,7 @@ const cur = new Float32Array(BARS * 2), from = new Float32Array(BARS * 2), tgt =
 let barFill = null, barFillState = '';
 function fillFor(state) {
   // one radial gradient for all bars: inner end --c2, outer end --c1
+  if (!cx) return '#888';
   if (barFillState !== state) {
     const css = getComputedStyle(document.body);
     barFill = cx.createRadialGradient(0, 0, R_IN, 0, 0, R_IN + REST + REACH);
@@ -66,6 +73,7 @@ function fillFor(state) {
 // main thread ~20% of a core while speaking. The path takes each bar's transform as it is added.
 const bucket = new Uint8Array(BARS);
 function drawBars(bars) {
+  if (!cx) return;
   const c = CSIZE * DPR / 2;
   cx.setTransform(1, 0, 0, 1, 0, 0);
   cx.clearRect(0, 0, corona.width, corona.height);
@@ -118,7 +126,54 @@ const micLevel = rms => Math.min(1, Math.max(0, (20 * Math.log10(rms + 1e-6) - M
 const STILL = document.documentElement.classList.contains('still');
 const level = { target: 0, value: 0, phase: 0, raf: 0, last: 0, state: '', since: 0, mix: 1 };
 const isLive = s => s === 'listening' || s === 'speaking';
+function setCoronaLite(state) {
+  // A few compositor transforms for the mic ring and the listening bars. No canvas, no 30 fps redraw.
+  const changed = state !== level.state;
+  if (changed) {
+    level.state = state;
+    level.since = performance.now();
+    if (!isLive(state)) level.target = 0;
+  }
+  if (STILL) {
+    if (isLive(state)) drawLiveLite(0.7, 1.2);
+    else clearLite();
+    return;
+  }
+  if (!changed && !isLive(state) && level.value === 0 && !level.raf) return;
+  if (!level.raf) {
+    level.last = performance.now() - 34;
+    level.raf = requestAnimationFrame(levelLoopLite);
+  }
+}
+function clearLite() {
+  const ring = $('micRing');
+  if (ring) ring.style.transform = '';
+}
+function drawLiveLite(v, p) {
+  const ring = $('micRing');
+  if (ring && level.state === 'listening') ring.style.transform = `scale(${(1 + v * .16).toFixed(3)})`;
+  const pending = $('pending');
+  if (pending) pending.querySelectorAll('.wave b').forEach((b, i) => {
+    b.style.transform = `scaleY(${(0.42 + v * 0.58 * (0.45 + 0.55 * Math.sin(p * 3 + i * 1.3))).toFixed(3)})`;
+  });
+}
+function levelLoopLite(now) {
+  level.raf = requestAnimationFrame(levelLoopLite);
+  if (now - level.last < 66) return;
+  const dt = Math.min(.1, (now - level.last) / 1000);
+  level.last = now;
+  level.value += (level.target - level.value) * (level.target > level.value ? .55 : .2);
+  level.phase += dt * 2.4;
+  if (isLive(level.state) || level.value > 0.02) drawLiveLite(level.value, level.phase);
+  else {
+    cancelAnimationFrame(level.raf);
+    level.raf = 0;
+    level.target = level.value = 0;
+    clearLite();
+  }
+}
 function setCorona(state) {
+  if (!coronaHost) return setCoronaLite(state);
   if (state === level.state) return;
   // morph from what is on screen; a spinning corona is turned by CSS, so carry its angle into the bars
   const m = getComputedStyle($('corona')).transform.match(/matrix\(([^,]+),\s*([^,]+)/);
@@ -162,18 +217,23 @@ function levelLoop(now) {
     cancelAnimationFrame(level.raf);
     level.raf = 0;
     level.target = level.value = 0;
-    $('corona').style.transform = $('core').style.transform = $('micRing').style.transform = $('mouth').style.transform = '';
+    const coronaEl = $('corona'), coreEl = $('core'), ringEl = $('micRing'), mouthEl = $('mouth');
+    if (coronaEl) coronaEl.style.transform = '';
+    if (coreEl) coreEl.style.transform = '';
+    if (ringEl) ringEl.style.transform = '';
+    if (mouthEl) mouthEl.style.transform = '';
   }
 }
 // The whole corona layer grows with the level too (compositor only, no repaint): with the longer bars,
 // the tips go from r ≈ 117 px when quiet to ≈ 190 px when loud. Core, mouth, mic ring and the wave follow.
 function drawLive(v, p) {
-  $('corona').style.transform = `scale(${(1 + v * .16).toFixed(3)})`;
-  $('core').style.transform = `scale(${(1 + v * .13).toFixed(3)})`;
-  $('mouth').style.transform = `scaleY(${(.55 + v * 1.6).toFixed(3)})`;
-  if (level.state === 'listening') $('micRing').style.transform = `scale(${(1 + v * .16).toFixed(3)})`;   // invisible otherwise
+  const coronaEl = $('corona'), coreEl = $('core'), mouthEl = $('mouth'), ringEl = $('micRing');
+  if (coronaEl) coronaEl.style.transform = `scale(${(1 + v * .16).toFixed(3)})`;
+  if (coreEl) coreEl.style.transform = `scale(${(1 + v * .13).toFixed(3)})`;
+  if (mouthEl) mouthEl.style.transform = `scaleY(${(.55 + v * 1.6).toFixed(3)})`;
+  if (level.state === 'listening' && ringEl) ringEl.style.transform = `scale(${(1 + v * .16).toFixed(3)})`;   // invisible otherwise
   const pending = $('pending');
-  if (pending) pending.querySelectorAll('.wave b').forEach((b, i) => { b.style.transform = `scaleY(${(.18 + v * (.5 + .5 * Math.sin(p * 3 + i * 1.3))).toFixed(3)})`; });
+  if (pending) pending.querySelectorAll('.wave b').forEach((b, i) => { b.style.transform = `scaleY(${(0.42 + v * 0.58 * (0.45 + 0.55 * Math.sin(p * 3 + i * 1.3))).toFixed(3)})`; });
 }
 
 /* ---- status: orb, title, hint, buttons ---- */
@@ -183,16 +243,21 @@ function modelName() {
 }
 const shownState = () => (ui.ptt ? 'listening' : ui.status.state);
 
+function renderVersion() {
+  const el = $('verPill');
+  if (el) el.textContent = '客户端 ' + (ui.version || '0.1.0');
+}
+
 function renderStatus() {
   const { state, connected } = ui.status;
   const shown = shownState();
   document.body.dataset.state = shown;
   const text = {
-    idle: ['说<em>「小麦小麦」</em>', connected ? '对话还在，唤醒后可以接着聊' : '或者点麦克风；按住可以直接说'],
-    connecting: ['正在连接…', '连上小智网关后就开始听'],
-    listening: ui.ptt ? ['松开<em>发送</em>', '说完松开手指'] : ['我在听', '说完停一下，我就开始回答'],
-    thinking: [`<em>${esc(modelName())}</em> 正在思考`, '复杂的问题可能要想一会儿'],
-    speaking: ['正在回答', '喊「小麦小麦」或点打断就能停下'],
+    idle: ['待机中', connected ? '对话还在，说「小麦小麦」可以接着聊' : '说「小麦小麦」开始对话，或点下方语音'],
+    connecting: ['正在连接', '连上小智网关后就开始听'],
+    listening: ui.ptt ? ['正在聆听', '说完松开手指'] : ['正在聆听', '说完停一下，就开始回答'],
+    thinking: ['正在思考', modelName() + ' 正在想，复杂的问题可能要一会儿'],
+    speaking: ['正在播报', '喊「小麦小麦」或点打断就能停下'],
   }[shown] || ['', ''];
   if (ui.status.recognising && !ui.ptt) text.splice(0, 2, '正在识别', '你说完了，正在把话转成文字');
   const micOff = ui.status.mic === false;
@@ -205,8 +270,9 @@ function renderStatus() {
   if (micOff && shown === 'idle') text.splice(0, 2, '麦克风已关', '拨开机身侧面的开关就能说话');
   else if (reports && shown === 'idle') text[1] = '有待汇报：点右上角收听，或叫一声「小麦小麦」';
   else if (sleeping && shown === 'idle' && !connected) text[1] = '睡眠时段：汇报不会自动念';
-  $('title').innerHTML = text[0];
+  $('title').textContent = text[0];
   $('hint').textContent = text[1];
+  renderVersion();
   // recognising, thinking or speaking: the turn can be interrupted (the question is dropped if nothing was said yet)
   $('btnAbort').disabled = !connected || !(state === 'speaking' || state === 'thinking' || (ui.status.recognising && !ui.ptt));
   $('btnEnd').disabled = !connected;
@@ -225,9 +291,15 @@ function renderStatus() {
 /* ---- models ---- */
 const logoSrc = m => (m && m.logo ? `/static/logos/${m.logo}.svg` : '');
 
+function setLogo(el, model) {
+  const src = logoSrc(model);
+  if (src) el.src = src;
+  else el.removeAttribute('src');
+}
+
 function renderModels() {
   const cur = ui.models.current;
-  $('pillLogo').src = logoSrc(cur);
+  setLogo($('pillLogo'), cur);
   $('pillLabel').textContent = cur ? cur.label : '选择模型';
   $('pillModel').textContent = cur ? (cur.model || cur.company || '') : '';
   const grid = $('grid');
@@ -565,7 +637,7 @@ function entryModel(entry) {
 
 function renderHead() {
   const m = entryModel(ui.thread.entry);
-  $('headLogo').src = logoSrc(m);
+  setLogo($('headLogo'), m);
   $('headTitle').textContent = m ? `与 ${m.label} 的对话` : '对话';
   const n = ui.thread.messages.length;
   $('headMeta').textContent = n ? `${n} 条消息 · ${ui.status.connected ? '对话中' : '记录已保存'}` : '新对话';
@@ -588,7 +660,8 @@ function msgEl(m) {
   el.className = 'msg ' + m.role;
   el.dataset.id = m.id;
   if (m.role === 'bot') {
-    el.innerHTML = `<img class="tile" src="${esc(logoSrc(entryModel(m.entry)))}" alt=""><div class="body"></div>`;
+    const src = logoSrc(entryModel(m.entry));
+    el.innerHTML = `<img class="tile"${src ? ` src="${esc(src)}"` : ''} alt=""><div class="body"></div>`;
   }
   fillMsg(el, m);
   return el;
@@ -660,7 +733,8 @@ function renderPending() {
   if (kind.startsWith('user')) {
     el.innerHTML = `<span class="wave">${'<b></b>'.repeat(5)}</span>${kind === 'user recog' ? '正在识别…' : ui.ptt ? '说完松开' : '正在听…'}`;
   } else {
-    el.innerHTML = `<img class="tile" src="${esc(logoSrc(entryModel(ui.thread.entry)))}" alt="">` +
+    const src = logoSrc(entryModel(ui.thread.entry));
+    el.innerHTML = `<img class="tile"${src ? ` src="${esc(src)}"` : ''} alt="">` +
       `<div class="body"><span class="dots"><i></i><i></i><i></i></span><span class="label">正在思考</span></div>`;
   }
   $('messages').appendChild(el);
@@ -789,7 +863,7 @@ for (const [q, bg, fg, icon] of SUGGEST) {
 }
 
 /* ---- demo: fake client for previewing the page on a desktop browser ---- */
-const demo = DEMO === null ? null : (() => {
+const demo = (DEMO === null || SHOT) ? null : (() => {
   const M = (label, model, logo, company, vendor) => ({ kind: 'llm', vendor, label, model, logo, company, entry: 'llm:' + vendor });
   const options = [
     M('Claude', 'claude-sonnet-4-5', 'claude-color', 'Anthropic', 'claude'),
@@ -897,9 +971,242 @@ const demo = DEMO === null ? null : (() => {
   return { start: () => run(0, DEMO || null), action, switchTo };
 })();
 
+function bindOffice() {
+  const themeBtn = $('btnTheme');
+  const paint = (name, save) => {
+    const theme = name === 'dusk' ? 'dusk' : 'mist';
+    document.documentElement.dataset.theme = theme;
+    if (themeBtn) {
+      themeBtn.textContent = theme === 'dusk' ? '主题 · 暮青' : '主题 · 晨雾';
+      themeBtn.setAttribute('aria-pressed', theme === 'dusk' ? 'true' : 'false');
+    }
+    if (save) {
+      try { localStorage.setItem('xm-theme', theme); } catch (e) { /* keep it for this page only */ }
+    }
+  };
+  const forced = params.get('theme');
+  if (forced === 'dusk' || forced === 'mist') paint(forced, false);
+  else paint(document.documentElement.dataset.theme === 'dusk' ? 'dusk' : 'mist', false);
+  if (themeBtn) themeBtn.addEventListener('click', () => {
+    paint(document.documentElement.dataset.theme === 'dusk' ? 'mist' : 'dusk', true);
+  });
+
+  const notice = $('notice');
+  let noticeAction = null;
+  const openNotice = (kicker, text, action) => {
+    if (!notice) return;
+    noticeAction = action;
+    $('noticeKicker').textContent = kicker;
+    $('noticeText').textContent = text;
+    const go = $('noticeWake');
+    go.hidden = !action;
+    if (action) go.textContent = action.label;
+    notice.classList.add('on');
+  };
+  const closeNotice = () => { noticeAction = null; if (notice) notice.classList.remove('on'); };
+  const vision = $('btnVision');
+  if (vision) vision.addEventListener('click', () => openNotice(
+    '看图 · 未接摄像头',
+    '这里没有摄像头接口。再点「开始聆听」也只是开始听，不会拍照，也不会把图片发出去。要看画面，请开始后自己说。',
+    { label: '开始聆听', run: () => post('/api/wake') }));
+  const music = $('btnMusic');
+  if (music) music.addEventListener('click', () => openNotice(
+    '本地歌曲 · 只发送这句话',
+    '再点一次，才会把「播放一首本地歌曲」发给当前对话。本页没有播放器，不会显示正在播放，也不表示已经播了。',
+    { label: '发送这句', run: () => { post('/api/text', { text: '播放一首本地歌曲' }); toast('已把这句发给对话'); } }));
+  const wake = $('noticeWake');
+  if (wake) wake.addEventListener('click', () => {
+    const action = noticeAction;
+    closeNotice();
+    if (action) action.run();
+  });
+  const ok = $('noticeOk');
+  if (ok) ok.addEventListener('click', closeNotice);
+  if (notice) notice.addEventListener('click', e => { if (e.target === notice) closeNotice(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeNotice(); });
+  bindWeather();
+}
+
+const WEATHER_OFF = { configured: false };
+let weatherChoices = [];
+// Open-Meteo WMO codes. A code that is not listed here is unknown, never sunny.
+const WMO_KIND = {
+  0: 'sun', 1: 'sun',
+  2: 'cloud', 3: 'cloud',
+  45: 'fog', 48: 'fog',
+  51: 'rain', 53: 'rain', 55: 'rain', 56: 'rain', 57: 'rain',
+  61: 'rain', 63: 'rain', 65: 'rain', 66: 'rain', 67: 'rain',
+  80: 'rain', 81: 'rain', 82: 'rain',
+  71: 'snow', 73: 'snow', 75: 'snow', 77: 'snow', 85: 'snow', 86: 'snow',
+  95: 'thunder', 96: 'thunder', 99: 'thunder',
+};
+const LABEL_KIND = {
+  '晴': 'sun', '大部晴朗': 'sun', '多云': 'cloud', '阴': 'cloud', '雾': 'fog', '雾凇': 'fog',
+  '小毛毛雨': 'rain', '毛毛雨': 'rain', '浓毛毛雨': 'rain', '冻毛毛雨': 'rain', '强冻毛毛雨': 'rain',
+  '小雨': 'rain', '中雨': 'rain', '大雨': 'rain', '冻雨': 'rain', '强冻雨': 'rain',
+  '小阵雨': 'rain', '阵雨': 'rain', '强阵雨': 'rain',
+  '小雪': 'snow', '中雪': 'snow', '大雪': 'snow', '雪粒': 'snow', '小阵雪': 'snow', '阵雪': 'snow',
+  '雷暴': 'thunder', '雷暴夹小冰雹': 'thunder', '雷暴夹大冰雹': 'thunder',
+};
+function weatherKind(code, condition) {
+  if (typeof code === 'number' && Number.isFinite(code)) return Object.prototype.hasOwnProperty.call(WMO_KIND, code) ? WMO_KIND[code] : 'unknown';
+  if (condition && Object.prototype.hasOwnProperty.call(LABEL_KIND, condition)) return LABEL_KIND[condition];
+  return 'unknown';
+}
+function weatherGlyph(kind) {
+  const wrap = inner => `<svg data-kind="${kind}" viewBox="0 0 48 48">${inner}</svg>`;
+  if (kind === 'sun') return wrap('<circle cx="24" cy="24" r="8" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M24 3v7M24 38v7M3 24h7M38 24h7M8 8l5 5M35 35l5 5M8 40l5-5M35 13l5-5"/></g>');
+  if (kind === 'cloud') return wrap('<path fill="currentColor" d="M18 36h14a8 8 0 0 0 .6-16 11 11 0 0 0-21 3.5A7.5 7.5 0 0 0 18 36z"/>');
+  if (kind === 'fog') return wrap('<g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M8 18h32M6 26h36M10 34h28"/></g>');
+  if (kind === 'rain') return wrap('<path fill="currentColor" d="M17 28h14a7 7 0 0 0 .5-14 10 10 0 0 0-19 3A6.5 6.5 0 0 0 17 28z"/><g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M16 34l-3 8M24 34l-3 8M32 34l-3 8"/></g>');
+  if (kind === 'snow') return wrap('<path fill="currentColor" d="M17 28h14a7 7 0 0 0 .5-14 10 10 0 0 0-19 3A6.5 6.5 0 0 0 17 28z"/><g fill="currentColor"><circle cx="16" cy="36" r="2"/><circle cx="24" cy="40" r="2"/><circle cx="32" cy="36" r="2"/></g>');
+  if (kind === 'thunder') return wrap('<path fill="currentColor" d="M17 27h14a7 7 0 0 0 .5-14 10 10 0 0 0-19 3A6.5 6.5 0 0 0 17 27z"/><path fill="currentColor" d="M26 26l-8 12h6l-2 8 10-14h-6z"/>');
+  if (kind === 'off') return wrap('<circle cx="24" cy="24" r="14" fill="none" stroke="currentColor" stroke-width="3"/>');
+  return wrap('<circle cx="24" cy="24" r="14" fill="none" stroke="currentColor" stroke-width="3"/><path d="M19 19a5 5 0 1 1 6 6c-1 .8-1.5 1.5-1.5 3" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="23.5" cy="34" r="1.6" fill="currentColor"/>');
+}
+
+function formatTemp(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '';
+  const rounded = Math.round(n * 10) / 10;
+  return (Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)) + '°C';
+}
+
+function paintWeather(kind, value, sky, detail) {
+  const card = $('cardWeather');
+  const icon = $('weatherIcon');
+  if (card) card.dataset.icon = kind;
+  if (icon) icon.innerHTML = weatherGlyph(kind);
+  if ($('weatherValue')) $('weatherValue').textContent = value;
+  if ($('weatherSky')) $('weatherSky').textContent = sky || '';
+  if ($('weatherDetail')) $('weatherDetail').textContent = detail || '';
+  if (card) card.setAttribute('aria-label', ['天气', value, sky, detail].filter(Boolean).join('，'));
+}
+
+function renderWeather(data) {
+  weatherChoices = (data && data.choose) || [];
+  if (!$('weatherValue')) return;
+  const failed = data && data.configured && (data.ok === false && !formatTemp(data.temperature));
+  if (!data || !data.configured || failed) {
+    if (data && data.configured) {
+      paintWeather('unknown', '暂时取不到', '', data.error || data.query || '已设地点，这次没有取到');
+      return;
+    }
+    paintWeather('off', '未接入', '', '未设置地点，不用本机位置');
+    return;
+  }
+  const where = [data.place, data.region, data.country_code && data.country_code !== 'CN' ? data.country : '']
+    .filter(Boolean).join(' · ');
+  const clock = String(data.observed_at || '').slice(11, 16);
+  const sky = data.condition || '';
+  paintWeather(weatherKind(data.weather_code, sky), formatTemp(data.temperature) || sky || '未知', sky, [where, clock].filter(Boolean).join('\n'));
+}
+
+async function refreshWeather() {
+  if (DEMO !== null || SHOT || params.get('wx') || !$('weatherValue')) return WEATHER_OFF;
+  try {
+    const r = await fetch('/api/weather');
+    if (!r.ok) { renderWeather(WEATHER_OFF); return WEATHER_OFF; }
+    const data = await r.json();
+    renderWeather(data);
+    return data;
+  } catch (e) {
+    renderWeather(WEATHER_OFF);
+    return WEATHER_OFF;
+  }
+}
+
+function bindWeather() {
+  const dialog = $('weatherDialog');
+  if (!dialog || !$('cardWeather')) return;
+  const choices = $('weatherChoices');
+  const error = $('weatherError');
+  const input = $('weatherPlace');
+  const showChoices = list => {
+    choices.textContent = '';
+    for (const item of list || []) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = [item.place, item.locality, item.region, item.country].filter(Boolean).join(' · ');
+      b.addEventListener('click', () => saveWeather(input.value, item.id));
+      choices.appendChild(b);
+    }
+  };
+  const openWeather = () => { error.textContent = ''; showChoices(weatherChoices); dialog.classList.add('on'); };
+  const close = () => { dialog.classList.remove('on'); };
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  $('cardWeather').addEventListener('click', openWeather);
+  $('weatherClose').addEventListener('click', close);
+  dialog.addEventListener('click', e => { if (e.target === dialog) close(); });
+  $('weatherFill').addEventListener('click', () => { input.value = '大庆'; error.textContent = ''; });
+  $('weatherClear').addEventListener('click', () => saveWeather('', null));
+  $('weatherSave').addEventListener('click', () => saveWeather(input.value, null));
+  async function saveWeather(place, id) {
+    error.textContent = '';
+    if (DEMO !== null || SHOT || params.get('wx')) { error.textContent = '测试预览不会保存地点'; return; }
+    try {
+      const body = { place: place };
+      if (id != null) body.id = id;
+      const r = await fetch('/api/weather', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify(body) });
+      const data = await r.json();
+      if (!r.ok || data.error) {
+        error.textContent = data.error || '没保存上';
+        return;
+      }
+      showChoices(data.choose || []);
+      renderWeather(data);
+      if (!data.choose) close();
+    } catch (e) {
+      error.textContent = '天气服务还没装上';
+    }
+  }
+  const wx = params.get('wx');
+  if (wx) {
+    const mark = '【测试】';
+    const base = { configured: true, ok: true, place: mark + '大庆', region: '黑龙江', observed_at: '2026-11-17T08:08' };
+    const fixture = {
+      sun: Object.assign({ weather_code: 0, condition: '晴', temperature: 21.5 }, base),
+      rain: Object.assign({ weather_code: 61, condition: '小雨', temperature: 9.5 }, base),
+      snow: Object.assign({ weather_code: 71, condition: '小雪', temperature: -14.5 }, base),
+      miss: { configured: true, ok: false, error: mark + '暂时取不到', query: mark + '大庆' },
+    };
+    renderWeather(fixture[wx] || { configured: true, ok: true, weather_code: 1234, condition: '', temperature: 1, place: mark + '未知码', region: '', observed_at: '' });
+    return;
+  }
+  refreshWeather();
+  setInterval(refreshWeather, 600000);
+}
+
+function applyShot(name) {
+  const test = text => '【测试】' + text;
+  const messages = [];
+  let state = 'idle', connected = false;
+  if (name === 'listen') { state = 'listening'; connected = true; }
+  else if (name === 'think') { state = 'thinking'; connected = true; }
+  else if (name === 'speak' || name === 'long') { state = 'speaking'; connected = true; }
+  else if (name === 'chat') { state = 'idle'; connected = true; }
+  else if (name === 'down') { state = 'idle'; connected = false; }
+  if (name === 'speak' || name === 'long' || name === 'chat') {
+    messages.push({ id: 1, role: 'user', text: test('请只把这段话当作界面换行测试，不要当成真实提问。'), time: Date.now() / 1000, entry: 'llm:test' });
+    const line = name === 'long'
+      ? test('以下全部是界面测试文本，不是模型回答，也不是办公室实况。') + '横屏卡片需要容纳连续的长句，并在卡片内部滚动。'.repeat(14) + '【测试】'
+      : test('这是一条测试播报，不是真实回答。');
+    messages.push({ id: 2, role: 'bot', text: line, time: Date.now() / 1000, entry: 'llm:test', interrupted: name === 'chat' });
+  }
+  handlers.snapshot({
+    build: 'shot', version: '0.1.0',
+    status: { state, connected, uploading: state === 'listening' },
+    models: { current: null, options: [] },
+    thread: { entry: 'llm:test', messages },
+    update: { enabled: false },
+  });
+}
+
 tick();
 setInterval(tick, 1000);
 renderStatus();
 renderThread();
-if (demo) demo.start();
+bindOffice();
+if (SHOT) applyShot(SHOT);
+else if (demo) demo.start();
 else connectEvents();

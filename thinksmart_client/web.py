@@ -6,7 +6,7 @@ import time
 
 from aiohttp import web
 
-from . import __version__, update
+from . import __version__, update, weather
 from .app import ROOT, Client, local_ip
 
 log = logging.getLogger(__name__)
@@ -128,6 +128,10 @@ def make_app(client: Client):
     app.router.add_post('/api/history/clear', clear_history)
     app.router.add_get('/api/health', health)
     app.router.add_get('/api/network', network)
+    # Optional. No saved place -> {configured: false}. Needs thinksmart_client/weather.py and
+    # outbound HTTPS to Open-Meteo only after a place is saved. No key. Older pages ignore it.
+    app.router.add_get('/api/weather', weather.handle_get)
+    app.router.add_post('/api/weather', weather.handle_post)
     app.router.add_post('/api/update/check', update_check)
     app.router.add_post('/api/update/install', update_install)
     app.router.add_static('/static/', WEB)
