@@ -53,9 +53,9 @@ try {
       <span id="time" class="sr">--:--</span>
     </div>
 
-    <div class="infos" role="group" aria-label="未接入的信息">
-      <button type="button" class="info" id="cardWeather" disabled aria-disabled="true">
-        <span>天气</span><b>未接入</b><small>不显示温度<br>或晴雨</small>
+    <div class="infos" role="group" aria-label="信息">
+      <button type="button" class="info" id="cardWeather">
+        <span>天气</span><b id="weatherValue">未接入</b><small id="weatherDetail">未设置地点，不用本机位置</small>
       </button>
       <button type="button" class="info" id="cardAgenda" disabled aria-disabled="true">
         <span>日程</span><b>未接入</b><small>不编造待办<br>或会议</small>
@@ -127,14 +127,14 @@ try {
       <span class="acap">点按唤醒，按住直接说</span>
     </button>
     <button class="action" id="btnVision" type="button">
-      <span class="badge">现有能力</span>
+      <span class="badge wait">不拍照</span>
       <span class="alabel">看图</span>
-      <span class="acap">语音里看，点击不打开摄像头</span>
+      <span class="acap">确认后才聆听，不发出图片</span>
     </button>
     <button class="action" id="btnMusic" type="button">
-      <span class="badge">现有能力</span>
+      <span class="badge wait">需确认</span>
       <span class="alabel">本地歌曲</span>
-      <span class="acap">由 Hub 播放，点击不开始播放</span>
+      <span class="acap">再点一次才发送点歌句</span>
     </button>
     <button class="action search" id="btnSearch" type="button" disabled aria-disabled="true">
       <span class="badge wait">未确认</span>
@@ -142,7 +142,23 @@ try {
       <span class="acap">验证中，不会发起搜索</span>
     </button>
   </nav>
-  <p class="foot">唤醒词「小麦小麦」。语音、看图和本地歌曲沿用现有能力；天气、日程、相册未接入；联网搜索未确认。</p>
+  <p class="foot">唤醒词「小麦小麦」。天气要填写地点后才显示；看图不拍照；歌曲只发送一句；日程、相册未接入；联网搜索未接。</p>
+</div>
+
+<div class="notice" id="weatherDialog" role="dialog" aria-modal="true" aria-labelledby="weatherKicker">
+  <div class="notice-card">
+    <div class="notice-kicker" id="weatherKicker">天气地点</div>
+    <p id="weatherHelp">只使用你填写的地名，不用这台浏览器或本机 IP。保存后才会去取天气。</p>
+    <input id="weatherPlace" class="weather-input" maxlength="24" placeholder="例如大庆" autocomplete="off" aria-label="天气地点">
+    <button type="button" class="link-btn" id="weatherFill">填入大庆</button>
+    <div id="weatherChoices" class="weather-choices"></div>
+    <p id="weatherError" class="weather-error"></p>
+    <div class="notice-actions">
+      <button type="button" class="notice-wake" id="weatherSave">保存并获取</button>
+      <button type="button" class="notice-ok" id="weatherClose">取消</button>
+    </div>
+    <button type="button" class="link-btn" id="weatherClear">清除地点，恢复未接入</button>
+  </div>
 </div>
 
 <div class="notice" id="notice" role="dialog" aria-modal="true" aria-labelledby="noticeKicker">

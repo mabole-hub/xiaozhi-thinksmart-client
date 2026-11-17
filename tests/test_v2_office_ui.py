@@ -34,11 +34,16 @@ def test_required_controls_stay():
 
 
 def test_unwired_panels_are_disabled_and_say_so():
-    assert _attr('cardWeather', 'disabled') and '未接入' in HTML
+    assert 'id="weatherValue">未接入' in HTML
+    assert '不用本机位置' in HTML
     assert _attr('cardAgenda', 'disabled')
     assert _attr('cardAlbum', 'disabled') and '无照片' in HTML
     assert _attr('btnSearch', 'disabled') and '未确认' in HTML
     assert '不会发起搜索' in HTML
+    assert '播放一首本地歌曲' in JS
+    assert '不会拍照' in JS
+    assert 'navigator.geolocation' not in JS
+    assert 'open-meteo' not in JS
     for absent in ('微信', '电话', 'tel:', 'weixin', 'wechat'):
         assert absent not in HTML.lower()
 

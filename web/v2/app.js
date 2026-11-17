@@ -992,30 +992,133 @@ function bindOffice() {
   });
 
   const notice = $('notice');
-  const openNotice = (kicker, text, wake) => {
+  let noticeAction = null;
+  const openNotice = (kicker, text, action) => {
     if (!notice) return;
+    noticeAction = action;
     $('noticeKicker').textContent = kicker;
     $('noticeText').textContent = text;
-    $('noticeWake').hidden = !wake;
+    const go = $('noticeWake');
+    go.hidden = !action;
+    if (action) go.textContent = action.label;
     notice.classList.add('on');
   };
-  const closeNotice = () => { if (notice) notice.classList.remove('on'); };
+  const closeNotice = () => { noticeAction = null; if (notice) notice.classList.remove('on'); };
   const vision = $('btnVision');
   if (vision) vision.addEventListener('click', () => openNotice(
-    '看图 · 现有语音能力',
-    '看图不在这个界面里单独接摄像头。点击不会打开相机，也不会读取相册。设备上若已有看图能力，请说「小麦小麦」后直接讲要看的内容。',
-    true));
+    '看图 · 未接摄像头',
+    '这里没有摄像头接口。再点「开始聆听」也只是开始听，不会拍照，也不会把图片发出去。要看画面，请开始后自己说。',
+    { label: '开始聆听', run: () => post('/api/wake') }));
   const music = $('btnMusic');
   if (music) music.addEventListener('click', () => openNotice(
-    '本地歌曲 · 由 Hub 播放',
-    '本地歌曲由 Hub 播放。这个按钮不会连接播放器，也不会显示正在播放。说「小麦小麦」后可以点歌。',
-    true));
+    '本地歌曲 · 只发送这句话',
+    '再点一次，才会把「播放一首本地歌曲」发给当前对话。本页没有播放器，不会显示正在播放，也不表示已经播了。',
+    { label: '发送这句', run: () => { post('/api/text', { text: '播放一首本地歌曲' }); toast('已把这句发给对话'); } }));
   const wake = $('noticeWake');
-  if (wake) wake.addEventListener('click', () => { closeNotice(); post('/api/wake'); });
+  if (wake) wake.addEventListener('click', () => {
+    const action = noticeAction;
+    closeNotice();
+    if (action) action.run();
+  });
   const ok = $('noticeOk');
   if (ok) ok.addEventListener('click', closeNotice);
   if (notice) notice.addEventListener('click', e => { if (e.target === notice) closeNotice(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeNotice(); });
+  bindWeather();
+}
+
+const WEATHER_OFF = { configured: false };
+let weatherChoices = [];
+
+function formatTemp(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '';
+  const rounded = Math.round(n * 10) / 10;
+  return (Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)) + '°C';
+}
+
+function renderWeather(data) {
+  const value = $('weatherValue');
+  const detail = $('weatherDetail');
+  weatherChoices = (data && data.choose) || [];
+  if (!value || !detail) return;
+  if (!data || !data.configured || data.ok === false && !formatTemp(data.temperature)) {
+    if (data && data.configured) {
+      value.textContent = '暂时取不到';
+      detail.textContent = data.error || data.query || '已设地点，这次没有取到';
+      return;
+    }
+    value.textContent = '未接入';
+    detail.textContent = '未设置地点，不用本机位置';
+    return;
+  }
+  const where = [data.place, data.region, data.country_code && data.country_code !== 'CN' ? data.country : '']
+    .filter(Boolean).join(' · ');
+  const clock = String(data.observed_at || '').slice(11, 16);
+  value.textContent = [formatTemp(data.temperature), data.condition].filter(Boolean).join(' ');
+  detail.textContent = [where, clock].filter(Boolean).join('\n');
+}
+
+async function refreshWeather() {
+  if (DEMO !== null || SHOT || !$('weatherValue')) return WEATHER_OFF;
+  try {
+    const r = await fetch('/api/weather');
+    if (!r.ok) { renderWeather(WEATHER_OFF); return WEATHER_OFF; }
+    const data = await r.json();
+    renderWeather(data);
+    return data;
+  } catch (e) {
+    renderWeather(WEATHER_OFF);
+    return WEATHER_OFF;
+  }
+}
+
+function bindWeather() {
+  const dialog = $('weatherDialog');
+  if (!dialog || !$('cardWeather')) return;
+  const choices = $('weatherChoices');
+  const error = $('weatherError');
+  const input = $('weatherPlace');
+  const showChoices = list => {
+    choices.textContent = '';
+    for (const item of list || []) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = [item.place, item.locality, item.region, item.country].filter(Boolean).join(' · ');
+      b.addEventListener('click', () => saveWeather(input.value, item.id));
+      choices.appendChild(b);
+    }
+  };
+  const openWeather = () => { error.textContent = ''; showChoices(weatherChoices); dialog.classList.add('on'); };
+  const close = () => { dialog.classList.remove('on'); };
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  $('cardWeather').addEventListener('click', openWeather);
+  $('weatherClose').addEventListener('click', close);
+  dialog.addEventListener('click', e => { if (e.target === dialog) close(); });
+  $('weatherFill').addEventListener('click', () => { input.value = '大庆'; error.textContent = ''; });
+  $('weatherClear').addEventListener('click', () => saveWeather('', null));
+  $('weatherSave').addEventListener('click', () => saveWeather(input.value, null));
+  async function saveWeather(place, id) {
+    error.textContent = '';
+    if (DEMO !== null || SHOT) { error.textContent = '测试预览不会保存地点'; return; }
+    try {
+      const body = { place: place };
+      if (id != null) body.id = id;
+      const r = await fetch('/api/weather', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify(body) });
+      const data = await r.json();
+      if (!r.ok || data.error) {
+        error.textContent = data.error || '没保存上';
+        return;
+      }
+      showChoices(data.choose || []);
+      renderWeather(data);
+      if (!data.choose) close();
+    } catch (e) {
+      error.textContent = '天气服务还没装上';
+    }
+  }
+  refreshWeather();
+  setInterval(refreshWeather, 600000);
 }
 
 function applyShot(name) {
