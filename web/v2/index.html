@@ -53,10 +53,16 @@ try {
       <span id="time" class="sr">--:--</span>
     </div>
 
-    <div class="infos" role="group" aria-label="信息">
-      <button type="button" class="info" id="cardWeather">
-        <span>天气</span><b id="weatherValue">未接入</b><small id="weatherDetail">未设置地点，不用本机位置</small>
-      </button>
+    <button type="button" class="weather-card" id="cardWeather" data-icon="off" aria-label="天气，未接入">
+      <span class="weather-icon" id="weatherIcon" aria-hidden="true"><svg data-kind="off" viewBox="0 0 48 48"><circle cx="24" cy="24" r="14" fill="none" stroke="currentColor" stroke-width="3"/></svg></span>
+      <span class="weather-copy">
+        <span class="weather-kicker">天气</span>
+        <b id="weatherValue">未接入</b>
+        <span id="weatherSky"></span>
+        <small id="weatherDetail">未设置地点，不用本机位置</small>
+      </span>
+    </button>
+    <div class="infos" role="group" aria-label="未接入的信息">
       <button type="button" class="info" id="cardAgenda" disabled aria-disabled="true">
         <span>日程</span><b>未接入</b><small>不编造待办<br>或会议</small>
       </button>

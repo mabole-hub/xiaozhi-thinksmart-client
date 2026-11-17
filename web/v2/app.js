@@ -7,7 +7,7 @@ const WEEK = '日一二三四五六';
 const params = new URLSearchParams(location.search);
 const DEMO = params.get('demo');   // null when not a demo
 const SHOT = params.get('shot');   // labeled test fixture; absent on the kiosk
-if (DEMO !== null || SHOT) document.documentElement.classList.add('demo');
+if (DEMO !== null || SHOT || params.get('wx')) document.documentElement.classList.add('demo');
 if ((DEMO !== null && /[?&]still\b/.test(location.search)) || SHOT) document.documentElement.classList.add('still');
 
 const ui = {
@@ -1029,6 +1029,41 @@ function bindOffice() {
 
 const WEATHER_OFF = { configured: false };
 let weatherChoices = [];
+// Open-Meteo WMO codes. A code that is not listed here is unknown, never sunny.
+const WMO_KIND = {
+  0: 'sun', 1: 'sun',
+  2: 'cloud', 3: 'cloud',
+  45: 'fog', 48: 'fog',
+  51: 'rain', 53: 'rain', 55: 'rain', 56: 'rain', 57: 'rain',
+  61: 'rain', 63: 'rain', 65: 'rain', 66: 'rain', 67: 'rain',
+  80: 'rain', 81: 'rain', 82: 'rain',
+  71: 'snow', 73: 'snow', 75: 'snow', 77: 'snow', 85: 'snow', 86: 'snow',
+  95: 'thunder', 96: 'thunder', 99: 'thunder',
+};
+const LABEL_KIND = {
+  '晴': 'sun', '大部晴朗': 'sun', '多云': 'cloud', '阴': 'cloud', '雾': 'fog', '雾凇': 'fog',
+  '小毛毛雨': 'rain', '毛毛雨': 'rain', '浓毛毛雨': 'rain', '冻毛毛雨': 'rain', '强冻毛毛雨': 'rain',
+  '小雨': 'rain', '中雨': 'rain', '大雨': 'rain', '冻雨': 'rain', '强冻雨': 'rain',
+  '小阵雨': 'rain', '阵雨': 'rain', '强阵雨': 'rain',
+  '小雪': 'snow', '中雪': 'snow', '大雪': 'snow', '雪粒': 'snow', '小阵雪': 'snow', '阵雪': 'snow',
+  '雷暴': 'thunder', '雷暴夹小冰雹': 'thunder', '雷暴夹大冰雹': 'thunder',
+};
+function weatherKind(code, condition) {
+  if (typeof code === 'number' && Number.isFinite(code)) return Object.prototype.hasOwnProperty.call(WMO_KIND, code) ? WMO_KIND[code] : 'unknown';
+  if (condition && Object.prototype.hasOwnProperty.call(LABEL_KIND, condition)) return LABEL_KIND[condition];
+  return 'unknown';
+}
+function weatherGlyph(kind) {
+  const wrap = inner => `<svg data-kind="${kind}" viewBox="0 0 48 48">${inner}</svg>`;
+  if (kind === 'sun') return wrap('<circle cx="24" cy="24" r="8" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M24 3v7M24 38v7M3 24h7M38 24h7M8 8l5 5M35 35l5 5M8 40l5-5M35 13l5-5"/></g>');
+  if (kind === 'cloud') return wrap('<path fill="currentColor" d="M18 36h14a8 8 0 0 0 .6-16 11 11 0 0 0-21 3.5A7.5 7.5 0 0 0 18 36z"/>');
+  if (kind === 'fog') return wrap('<g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M8 18h32M6 26h36M10 34h28"/></g>');
+  if (kind === 'rain') return wrap('<path fill="currentColor" d="M17 28h14a7 7 0 0 0 .5-14 10 10 0 0 0-19 3A6.5 6.5 0 0 0 17 28z"/><g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M16 34l-3 8M24 34l-3 8M32 34l-3 8"/></g>');
+  if (kind === 'snow') return wrap('<path fill="currentColor" d="M17 28h14a7 7 0 0 0 .5-14 10 10 0 0 0-19 3A6.5 6.5 0 0 0 17 28z"/><g fill="currentColor"><circle cx="16" cy="36" r="2"/><circle cx="24" cy="40" r="2"/><circle cx="32" cy="36" r="2"/></g>');
+  if (kind === 'thunder') return wrap('<path fill="currentColor" d="M17 27h14a7 7 0 0 0 .5-14 10 10 0 0 0-19 3A6.5 6.5 0 0 0 17 27z"/><path fill="currentColor" d="M26 26l-8 12h6l-2 8 10-14h-6z"/>');
+  if (kind === 'off') return wrap('<circle cx="24" cy="24" r="14" fill="none" stroke="currentColor" stroke-width="3"/>');
+  return wrap('<circle cx="24" cy="24" r="14" fill="none" stroke="currentColor" stroke-width="3"/><path d="M19 19a5 5 0 1 1 6 6c-1 .8-1.5 1.5-1.5 3" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="23.5" cy="34" r="1.6" fill="currentColor"/>');
+}
 
 function formatTemp(n) {
   if (typeof n !== 'number' || !Number.isFinite(n)) return '';
@@ -1036,30 +1071,38 @@ function formatTemp(n) {
   return (Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)) + '°C';
 }
 
+function paintWeather(kind, value, sky, detail) {
+  const card = $('cardWeather');
+  const icon = $('weatherIcon');
+  if (card) card.dataset.icon = kind;
+  if (icon) icon.innerHTML = weatherGlyph(kind);
+  if ($('weatherValue')) $('weatherValue').textContent = value;
+  if ($('weatherSky')) $('weatherSky').textContent = sky || '';
+  if ($('weatherDetail')) $('weatherDetail').textContent = detail || '';
+  if (card) card.setAttribute('aria-label', ['天气', value, sky, detail].filter(Boolean).join('，'));
+}
+
 function renderWeather(data) {
-  const value = $('weatherValue');
-  const detail = $('weatherDetail');
   weatherChoices = (data && data.choose) || [];
-  if (!value || !detail) return;
-  if (!data || !data.configured || data.ok === false && !formatTemp(data.temperature)) {
+  if (!$('weatherValue')) return;
+  const failed = data && data.configured && (data.ok === false && !formatTemp(data.temperature));
+  if (!data || !data.configured || failed) {
     if (data && data.configured) {
-      value.textContent = '暂时取不到';
-      detail.textContent = data.error || data.query || '已设地点，这次没有取到';
+      paintWeather('unknown', '暂时取不到', '', data.error || data.query || '已设地点，这次没有取到');
       return;
     }
-    value.textContent = '未接入';
-    detail.textContent = '未设置地点，不用本机位置';
+    paintWeather('off', '未接入', '', '未设置地点，不用本机位置');
     return;
   }
   const where = [data.place, data.region, data.country_code && data.country_code !== 'CN' ? data.country : '']
     .filter(Boolean).join(' · ');
   const clock = String(data.observed_at || '').slice(11, 16);
-  value.textContent = [formatTemp(data.temperature), data.condition].filter(Boolean).join(' ');
-  detail.textContent = [where, clock].filter(Boolean).join('\n');
+  const sky = data.condition || '';
+  paintWeather(weatherKind(data.weather_code, sky), formatTemp(data.temperature) || sky || '未知', sky, [where, clock].filter(Boolean).join('\n'));
 }
 
 async function refreshWeather() {
-  if (DEMO !== null || SHOT || !$('weatherValue')) return WEATHER_OFF;
+  if (DEMO !== null || SHOT || params.get('wx') || !$('weatherValue')) return WEATHER_OFF;
   try {
     const r = await fetch('/api/weather');
     if (!r.ok) { renderWeather(WEATHER_OFF); return WEATHER_OFF; }
@@ -1099,7 +1142,7 @@ function bindWeather() {
   $('weatherSave').addEventListener('click', () => saveWeather(input.value, null));
   async function saveWeather(place, id) {
     error.textContent = '';
-    if (DEMO !== null || SHOT) { error.textContent = '测试预览不会保存地点'; return; }
+    if (DEMO !== null || SHOT || params.get('wx')) { error.textContent = '测试预览不会保存地点'; return; }
     try {
       const body = { place: place };
       if (id != null) body.id = id;
@@ -1116,6 +1159,19 @@ function bindWeather() {
     } catch (e) {
       error.textContent = '天气服务还没装上';
     }
+  }
+  const wx = params.get('wx');
+  if (wx) {
+    const mark = '【测试】';
+    const base = { configured: true, ok: true, place: mark + '大庆', region: '黑龙江', observed_at: '2026-11-17T08:08' };
+    const fixture = {
+      sun: Object.assign({ weather_code: 0, condition: '晴', temperature: 21.5 }, base),
+      rain: Object.assign({ weather_code: 61, condition: '小雨', temperature: 9.5 }, base),
+      snow: Object.assign({ weather_code: 71, condition: '小雪', temperature: -14.5 }, base),
+      miss: { configured: true, ok: false, error: mark + '暂时取不到', query: mark + '大庆' },
+    };
+    renderWeather(fixture[wx] || { configured: true, ok: true, weather_code: 1234, condition: '', temperature: 1, place: mark + '未知码', region: '', observed_at: '' });
+    return;
   }
   refreshWeather();
   setInterval(refreshWeather, 600000);
