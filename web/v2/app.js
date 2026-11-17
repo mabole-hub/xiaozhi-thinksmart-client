@@ -1,11 +1,14 @@
-// ThinkSmart voice client page v2: renders what the client streams on /events and sends the buttons back.
-// Same contract as v1. Open with ?demo (or ?demo=<scene>) to preview without a client.
+// ThinkSmart voice client page v2. Office landscape panel: same /events and /api contract as before.
+// ?demo (or ?demo=<scene>) previews without a client. ?shot= is a labeled fixture and is never the kiosk default.
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pad = n => String(n).padStart(2, '0');
 const WEEK = '日一二三四五六';
-const DEMO = new URLSearchParams(location.search).get('demo');   // null when not a demo
-if (DEMO !== null && /[?&]still\b/.test(location.search)) document.documentElement.classList.add('still');
+const params = new URLSearchParams(location.search);
+const DEMO = params.get('demo');   // null when not a demo
+const SHOT = params.get('shot');   // labeled test fixture; absent on the kiosk
+if (DEMO !== null || SHOT) document.documentElement.classList.add('demo');
+if ((DEMO !== null && /[?&]still\b/.test(location.search)) || SHOT) document.documentElement.classList.add('still');
 
 const ui = {
   status: { state: 'idle', connected: false, uploading: false },
@@ -40,12 +43,15 @@ function tick() {
    All bars are drawn on one canvas: as 48 elements, restyling them 30 times a second kept
    the device's main thread at ~93% and the page at ~17 fps. */
 const BARS = 48, R_IN = 110, BAR_W = 6, REST = 8, REACH = 46;   // px; REST + REACH stays inside the canvas
-const corona = document.createElement('canvas');
+const coronaHost = $('corona');   // the office panel has no corona canvas; v2b and older copies still do
+const corona = coronaHost ? document.createElement('canvas') : null;
 const CSIZE = 330, DPR = Math.min(2, window.devicePixelRatio || 1);
-corona.width = corona.height = CSIZE * DPR;
-corona.style.width = corona.style.height = '100%';
-$('corona').appendChild(corona);
-const cx = corona.getContext('2d');
+if (coronaHost) {
+  corona.width = corona.height = CSIZE * DPR;
+  corona.style.width = corona.style.height = '100%';
+  coronaHost.appendChild(corona);
+}
+const cx = corona ? corona.getContext('2d') : null;
 const ANG = Array.from({ length: BARS }, (_, i) => i / BARS * Math.PI * 2);
 const COS = ANG.map(Math.cos), SIN = ANG.map(Math.sin);
 // per bar: [length px, opacity]; what is on screen, where a morph starts, and where the state wants it
@@ -53,6 +59,7 @@ const cur = new Float32Array(BARS * 2), from = new Float32Array(BARS * 2), tgt =
 let barFill = null, barFillState = '';
 function fillFor(state) {
   // one radial gradient for all bars: inner end --c2, outer end --c1
+  if (!cx) return '#888';
   if (barFillState !== state) {
     const css = getComputedStyle(document.body);
     barFill = cx.createRadialGradient(0, 0, R_IN, 0, 0, R_IN + REST + REACH);
@@ -66,6 +73,7 @@ function fillFor(state) {
 // main thread ~20% of a core while speaking. The path takes each bar's transform as it is added.
 const bucket = new Uint8Array(BARS);
 function drawBars(bars) {
+  if (!cx) return;
   const c = CSIZE * DPR / 2;
   cx.setTransform(1, 0, 0, 1, 0, 0);
   cx.clearRect(0, 0, corona.width, corona.height);
@@ -118,7 +126,54 @@ const micLevel = rms => Math.min(1, Math.max(0, (20 * Math.log10(rms + 1e-6) - M
 const STILL = document.documentElement.classList.contains('still');
 const level = { target: 0, value: 0, phase: 0, raf: 0, last: 0, state: '', since: 0, mix: 1 };
 const isLive = s => s === 'listening' || s === 'speaking';
+function setCoronaLite(state) {
+  // A few compositor transforms for the mic ring and the listening bars. No canvas, no 30 fps redraw.
+  const changed = state !== level.state;
+  if (changed) {
+    level.state = state;
+    level.since = performance.now();
+    if (!isLive(state)) level.target = 0;
+  }
+  if (STILL) {
+    if (isLive(state)) drawLiveLite(0.7, 1.2);
+    else clearLite();
+    return;
+  }
+  if (!changed && !isLive(state) && level.value === 0 && !level.raf) return;
+  if (!level.raf) {
+    level.last = performance.now() - 34;
+    level.raf = requestAnimationFrame(levelLoopLite);
+  }
+}
+function clearLite() {
+  const ring = $('micRing');
+  if (ring) ring.style.transform = '';
+}
+function drawLiveLite(v, p) {
+  const ring = $('micRing');
+  if (ring && level.state === 'listening') ring.style.transform = `scale(${(1 + v * .16).toFixed(3)})`;
+  const pending = $('pending');
+  if (pending) pending.querySelectorAll('.wave b').forEach((b, i) => {
+    b.style.transform = `scaleY(${(0.42 + v * 0.58 * (0.45 + 0.55 * Math.sin(p * 3 + i * 1.3))).toFixed(3)})`;
+  });
+}
+function levelLoopLite(now) {
+  level.raf = requestAnimationFrame(levelLoopLite);
+  if (now - level.last < 66) return;
+  const dt = Math.min(.1, (now - level.last) / 1000);
+  level.last = now;
+  level.value += (level.target - level.value) * (level.target > level.value ? .55 : .2);
+  level.phase += dt * 2.4;
+  if (isLive(level.state) || level.value > 0.02) drawLiveLite(level.value, level.phase);
+  else {
+    cancelAnimationFrame(level.raf);
+    level.raf = 0;
+    level.target = level.value = 0;
+    clearLite();
+  }
+}
 function setCorona(state) {
+  if (!coronaHost) return setCoronaLite(state);
   if (state === level.state) return;
   // morph from what is on screen; a spinning corona is turned by CSS, so carry its angle into the bars
   const m = getComputedStyle($('corona')).transform.match(/matrix\(([^,]+),\s*([^,]+)/);
@@ -162,18 +217,23 @@ function levelLoop(now) {
     cancelAnimationFrame(level.raf);
     level.raf = 0;
     level.target = level.value = 0;
-    $('corona').style.transform = $('core').style.transform = $('micRing').style.transform = $('mouth').style.transform = '';
+    const coronaEl = $('corona'), coreEl = $('core'), ringEl = $('micRing'), mouthEl = $('mouth');
+    if (coronaEl) coronaEl.style.transform = '';
+    if (coreEl) coreEl.style.transform = '';
+    if (ringEl) ringEl.style.transform = '';
+    if (mouthEl) mouthEl.style.transform = '';
   }
 }
 // The whole corona layer grows with the level too (compositor only, no repaint): with the longer bars,
 // the tips go from r ≈ 117 px when quiet to ≈ 190 px when loud. Core, mouth, mic ring and the wave follow.
 function drawLive(v, p) {
-  $('corona').style.transform = `scale(${(1 + v * .16).toFixed(3)})`;
-  $('core').style.transform = `scale(${(1 + v * .13).toFixed(3)})`;
-  $('mouth').style.transform = `scaleY(${(.55 + v * 1.6).toFixed(3)})`;
-  if (level.state === 'listening') $('micRing').style.transform = `scale(${(1 + v * .16).toFixed(3)})`;   // invisible otherwise
+  const coronaEl = $('corona'), coreEl = $('core'), mouthEl = $('mouth'), ringEl = $('micRing');
+  if (coronaEl) coronaEl.style.transform = `scale(${(1 + v * .16).toFixed(3)})`;
+  if (coreEl) coreEl.style.transform = `scale(${(1 + v * .13).toFixed(3)})`;
+  if (mouthEl) mouthEl.style.transform = `scaleY(${(.55 + v * 1.6).toFixed(3)})`;
+  if (level.state === 'listening' && ringEl) ringEl.style.transform = `scale(${(1 + v * .16).toFixed(3)})`;   // invisible otherwise
   const pending = $('pending');
-  if (pending) pending.querySelectorAll('.wave b').forEach((b, i) => { b.style.transform = `scaleY(${(.18 + v * (.5 + .5 * Math.sin(p * 3 + i * 1.3))).toFixed(3)})`; });
+  if (pending) pending.querySelectorAll('.wave b').forEach((b, i) => { b.style.transform = `scaleY(${(0.42 + v * 0.58 * (0.45 + 0.55 * Math.sin(p * 3 + i * 1.3))).toFixed(3)})`; });
 }
 
 /* ---- status: orb, title, hint, buttons ---- */
@@ -183,16 +243,21 @@ function modelName() {
 }
 const shownState = () => (ui.ptt ? 'listening' : ui.status.state);
 
+function renderVersion() {
+  const el = $('verPill');
+  if (el) el.textContent = '客户端 ' + (ui.version || '0.1.0');
+}
+
 function renderStatus() {
   const { state, connected } = ui.status;
   const shown = shownState();
   document.body.dataset.state = shown;
   const text = {
-    idle: ['说<em>「小麦小麦」</em>', connected ? '对话还在，唤醒后可以接着聊' : '或者点麦克风；按住可以直接说'],
-    connecting: ['正在连接…', '连上小智网关后就开始听'],
-    listening: ui.ptt ? ['松开<em>发送</em>', '说完松开手指'] : ['我在听', '说完停一下，我就开始回答'],
-    thinking: [`<em>${esc(modelName())}</em> 正在思考`, '复杂的问题可能要想一会儿'],
-    speaking: ['正在回答', '喊「小麦小麦」或点打断就能停下'],
+    idle: ['待机中', connected ? '对话还在，说「小麦小麦」可以接着聊' : '说「小麦小麦」开始对话，或点下方语音'],
+    connecting: ['正在连接', '连上小智网关后就开始听'],
+    listening: ui.ptt ? ['正在聆听', '说完松开手指'] : ['正在聆听', '说完停一下，就开始回答'],
+    thinking: ['正在思考', modelName() + ' 正在想，复杂的问题可能要一会儿'],
+    speaking: ['正在播报', '喊「小麦小麦」或点打断就能停下'],
   }[shown] || ['', ''];
   if (ui.status.recognising && !ui.ptt) text.splice(0, 2, '正在识别', '你说完了，正在把话转成文字');
   const micOff = ui.status.mic === false;
@@ -205,8 +270,9 @@ function renderStatus() {
   if (micOff && shown === 'idle') text.splice(0, 2, '麦克风已关', '拨开机身侧面的开关就能说话');
   else if (reports && shown === 'idle') text[1] = '有待汇报：点右上角收听，或叫一声「小麦小麦」';
   else if (sleeping && shown === 'idle' && !connected) text[1] = '睡眠时段：汇报不会自动念';
-  $('title').innerHTML = text[0];
+  $('title').textContent = text[0];
   $('hint').textContent = text[1];
+  renderVersion();
   // recognising, thinking or speaking: the turn can be interrupted (the question is dropped if nothing was said yet)
   $('btnAbort').disabled = !connected || !(state === 'speaking' || state === 'thinking' || (ui.status.recognising && !ui.ptt));
   $('btnEnd').disabled = !connected;
@@ -225,9 +291,15 @@ function renderStatus() {
 /* ---- models ---- */
 const logoSrc = m => (m && m.logo ? `/static/logos/${m.logo}.svg` : '');
 
+function setLogo(el, model) {
+  const src = logoSrc(model);
+  if (src) el.src = src;
+  else el.removeAttribute('src');
+}
+
 function renderModels() {
   const cur = ui.models.current;
-  $('pillLogo').src = logoSrc(cur);
+  setLogo($('pillLogo'), cur);
   $('pillLabel').textContent = cur ? cur.label : '选择模型';
   $('pillModel').textContent = cur ? (cur.model || cur.company || '') : '';
   const grid = $('grid');
@@ -565,7 +637,7 @@ function entryModel(entry) {
 
 function renderHead() {
   const m = entryModel(ui.thread.entry);
-  $('headLogo').src = logoSrc(m);
+  setLogo($('headLogo'), m);
   $('headTitle').textContent = m ? `与 ${m.label} 的对话` : '对话';
   const n = ui.thread.messages.length;
   $('headMeta').textContent = n ? `${n} 条消息 · ${ui.status.connected ? '对话中' : '记录已保存'}` : '新对话';
@@ -588,7 +660,8 @@ function msgEl(m) {
   el.className = 'msg ' + m.role;
   el.dataset.id = m.id;
   if (m.role === 'bot') {
-    el.innerHTML = `<img class="tile" src="${esc(logoSrc(entryModel(m.entry)))}" alt=""><div class="body"></div>`;
+    const src = logoSrc(entryModel(m.entry));
+    el.innerHTML = `<img class="tile"${src ? ` src="${esc(src)}"` : ''} alt=""><div class="body"></div>`;
   }
   fillMsg(el, m);
   return el;
@@ -660,7 +733,8 @@ function renderPending() {
   if (kind.startsWith('user')) {
     el.innerHTML = `<span class="wave">${'<b></b>'.repeat(5)}</span>${kind === 'user recog' ? '正在识别…' : ui.ptt ? '说完松开' : '正在听…'}`;
   } else {
-    el.innerHTML = `<img class="tile" src="${esc(logoSrc(entryModel(ui.thread.entry)))}" alt="">` +
+    const src = logoSrc(entryModel(ui.thread.entry));
+    el.innerHTML = `<img class="tile"${src ? ` src="${esc(src)}"` : ''} alt="">` +
       `<div class="body"><span class="dots"><i></i><i></i><i></i></span><span class="label">正在思考</span></div>`;
   }
   $('messages').appendChild(el);
@@ -789,7 +863,7 @@ for (const [q, bg, fg, icon] of SUGGEST) {
 }
 
 /* ---- demo: fake client for previewing the page on a desktop browser ---- */
-const demo = DEMO === null ? null : (() => {
+const demo = (DEMO === null || SHOT) ? null : (() => {
   const M = (label, model, logo, company, vendor) => ({ kind: 'llm', vendor, label, model, logo, company, entry: 'llm:' + vendor });
   const options = [
     M('Claude', 'claude-sonnet-4-5', 'claude-color', 'Anthropic', 'claude'),
@@ -897,9 +971,83 @@ const demo = DEMO === null ? null : (() => {
   return { start: () => run(0, DEMO || null), action, switchTo };
 })();
 
+function bindOffice() {
+  const themeBtn = $('btnTheme');
+  const paint = (name, save) => {
+    const theme = name === 'dusk' ? 'dusk' : 'mist';
+    document.documentElement.dataset.theme = theme;
+    if (themeBtn) {
+      themeBtn.textContent = theme === 'dusk' ? '主题 · 暮青' : '主题 · 晨雾';
+      themeBtn.setAttribute('aria-pressed', theme === 'dusk' ? 'true' : 'false');
+    }
+    if (save) {
+      try { localStorage.setItem('xm-theme', theme); } catch (e) { /* keep it for this page only */ }
+    }
+  };
+  const forced = params.get('theme');
+  if (forced === 'dusk' || forced === 'mist') paint(forced, false);
+  else paint(document.documentElement.dataset.theme === 'dusk' ? 'dusk' : 'mist', false);
+  if (themeBtn) themeBtn.addEventListener('click', () => {
+    paint(document.documentElement.dataset.theme === 'dusk' ? 'mist' : 'dusk', true);
+  });
+
+  const notice = $('notice');
+  const openNotice = (kicker, text, wake) => {
+    if (!notice) return;
+    $('noticeKicker').textContent = kicker;
+    $('noticeText').textContent = text;
+    $('noticeWake').hidden = !wake;
+    notice.classList.add('on');
+  };
+  const closeNotice = () => { if (notice) notice.classList.remove('on'); };
+  const vision = $('btnVision');
+  if (vision) vision.addEventListener('click', () => openNotice(
+    '看图 · 现有语音能力',
+    '看图不在这个界面里单独接摄像头。点击不会打开相机，也不会读取相册。设备上若已有看图能力，请说「小麦小麦」后直接讲要看的内容。',
+    true));
+  const music = $('btnMusic');
+  if (music) music.addEventListener('click', () => openNotice(
+    '本地歌曲 · 由 Hub 播放',
+    '本地歌曲由 Hub 播放。这个按钮不会连接播放器，也不会显示正在播放。说「小麦小麦」后可以点歌。',
+    true));
+  const wake = $('noticeWake');
+  if (wake) wake.addEventListener('click', () => { closeNotice(); post('/api/wake'); });
+  const ok = $('noticeOk');
+  if (ok) ok.addEventListener('click', closeNotice);
+  if (notice) notice.addEventListener('click', e => { if (e.target === notice) closeNotice(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeNotice(); });
+}
+
+function applyShot(name) {
+  const test = text => '【测试】' + text;
+  const messages = [];
+  let state = 'idle', connected = false;
+  if (name === 'listen') { state = 'listening'; connected = true; }
+  else if (name === 'think') { state = 'thinking'; connected = true; }
+  else if (name === 'speak' || name === 'long') { state = 'speaking'; connected = true; }
+  else if (name === 'chat') { state = 'idle'; connected = true; }
+  else if (name === 'down') { state = 'idle'; connected = false; }
+  if (name === 'speak' || name === 'long' || name === 'chat') {
+    messages.push({ id: 1, role: 'user', text: test('请只把这段话当作界面换行测试，不要当成真实提问。'), time: Date.now() / 1000, entry: 'llm:test' });
+    const line = name === 'long'
+      ? test('以下全部是界面测试文本，不是模型回答，也不是办公室实况。') + '横屏卡片需要容纳连续的长句，并在卡片内部滚动。'.repeat(14) + '【测试】'
+      : test('这是一条测试播报，不是真实回答。');
+    messages.push({ id: 2, role: 'bot', text: line, time: Date.now() / 1000, entry: 'llm:test', interrupted: name === 'chat' });
+  }
+  handlers.snapshot({
+    build: 'shot', version: '0.1.0',
+    status: { state, connected, uploading: state === 'listening' },
+    models: { current: null, options: [] },
+    thread: { entry: 'llm:test', messages },
+    update: { enabled: false },
+  });
+}
+
 tick();
 setInterval(tick, 1000);
 renderStatus();
 renderThread();
-if (demo) demo.start();
+bindOffice();
+if (SHOT) applyShot(SHOT);
+else if (demo) demo.start();
 else connectEvents();
