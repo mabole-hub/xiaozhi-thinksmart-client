@@ -28,6 +28,10 @@ def _attr(id_, name):
     return name in tag.group(0)
 
 
+def _css_rules():
+    return re.sub(r'/\*.*?\*/', '', CSS, flags=re.S)
+
+
 def test_required_controls_stay():
     for id_ in REQUIRED_IDS:
         assert f'id="{id_}"' in HTML
@@ -49,7 +53,7 @@ def test_unwired_panels_are_disabled_and_say_so():
 
 
 def test_no_external_assets_or_canvas_runtime():
-    css_rules = re.sub(r'/\*.*?\*/', '', CSS, flags=re.S)
+    css_rules = _css_rules()
     for text in (HTML, CSS, JS):
         assert 'grok/canvas' not in text
         assert '@import' not in text
@@ -79,3 +83,38 @@ def test_default_page_is_not_a_fixture():
 def test_motion_can_be_reduced():
     assert 'prefers-reduced-motion' in CSS
     assert '.still *' in CSS
+
+
+_STANDARD_WEIGHT = re.compile(r'(?:[1-9]00|normal|bold|bolder|lighter|inherit|initial|unset)$')
+
+
+def test_font_weight_stays_on_the_hundred_step():
+    """Off-step weights were written, then rewritten, before the office page shipped.
+
+    font-weight: 750 was on the demo banner, .info b, action labels and badges,
+    sheet headings, and the other bold labels. font-weight: 320 was on .big-time.
+    The office review called 750 and 320 non-standard and replaced them
+    with 700 and 300.
+    """
+    for weight in re.findall(r'font-weight:\s*([^;}]+)', _css_rules()):
+        assert _STANDARD_WEIGHT.match(weight.strip()), weight
+
+
+def test_translucent_fills_are_not_color_mix():
+    """color-mix() was used twice for the same translucent fill, then replaced with rgba.
+
+    .link.on used color-mix(in srgb, var(--ok) 16%, transparent).
+    .cut used color-mix(in srgb, var(--pending) 16%, transparent).
+    """
+    assert 'color-mix(' not in _css_rules()
+
+
+def test_missing_logo_does_not_assign_an_empty_src():
+    """An empty logo src was assigned in two places, and each request hit this page.
+
+    $('pillLogo').src = logoSrc(cur) and $('headLogo').src = logoSrc(m)
+    both set src to '' when the model had no logo.
+    """
+    assert not re.search(r'''\.src\s*=\s*(?:logoSrc\s*\(|['"]{2})''', JS)
+    assert "if (src) el.src = src;" in JS
+    assert "el.removeAttribute('src')" in JS
