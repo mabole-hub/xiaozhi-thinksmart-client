@@ -620,7 +620,7 @@ $('settingsClose').addEventListener('click', () => $('settings').classList.remov
 $('reportPill').addEventListener('click', () => { post('/api/reports/play'); toast('马上念给你听'); });
 
 /* ---- right side: welcome screen or conversation ---- */
-// The welcome screen (clock) when idle with nothing going on: no messages yet, or the conversation
+// The welcome screen when idle with nothing going on: no messages yet, or the conversation
 // is over (the hub closed the connection). The hub keeps the history, so the thread is rarely empty;
 // it comes back with the chat page on the next wake. While the connection lasts (~2 minutes) the
 // chat page stays. A new conversation shows the chat (and its "listening" bubble) from the wake on.
